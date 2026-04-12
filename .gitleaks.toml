@@ -1,0 +1,12 @@
+[extend]
+useDefault = true
+
+[[rules]]
+id = "azure-storage-connection-string"
+description = "Azure Storage Account connection string"
+regex = '''DefaultEndpointsProtocol=https;AccountName=[^;]+;AccountKey=[A-Za-z0-9+/]{86}=='''
+tags = ["azure", "storage", "credentials"]
+
+[[rules.allowlists]]
+description = "Ignore test fixtures"
+paths = ['''tests/fixtures/.*''']
