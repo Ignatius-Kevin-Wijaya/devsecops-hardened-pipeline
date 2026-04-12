@@ -1,0 +1,16 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+jobs:
+  scan:
+    uses: ./.github/workflows/security-scan.yml
+    with:
+      image-name: "myapp-release"
+      registry: "yourregistry.azurecr.io"
+    permissions:
+      contents: read
+      packages: write
+    

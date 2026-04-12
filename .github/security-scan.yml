@@ -1,0 +1,25 @@
+name: Security Scan
+
+on:
+  workflow_call:
+    inputs:
+      image-name:
+        required: true
+        type: string
+      registry:
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  stub-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+
+      - name: Echo scan target
+        run: |
+          echo "Scanning ${{ inputs.registry }}/${{ inputs.image-name }}"
+          
