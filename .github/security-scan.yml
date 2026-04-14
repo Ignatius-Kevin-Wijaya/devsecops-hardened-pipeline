@@ -14,15 +14,6 @@ permissions:
   contents: read
 
 jobs:
-  stub-scan:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
-
-      - name: Echo scan target
-        run: |
-          echo "Scanning ${{ inputs.registry }}/${{ inputs.image-name }}"
-
   git-leaks:
     runs-on: ubuntu-latest
     permissions:
@@ -46,3 +37,60 @@ jobs:
         uses: github/codeql-action/upload-sarif@c10b8064de6f491fea524254123dbe5e09572f13
         with:
           sarif_file: gitleaks-report.sarif
+
+  semgrep:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+
+      - name: Install Semgrep
+        run: pip install semgrep==1.67.0
+
+      - name: Run Semgrep — blocking rules (secrets)
+        run: |
+          semgrep scan \
+            --config p/secrets \
+            --sarif --output semgrep-secrets.sarif \
+            --error \
+            src/ || true
+
+      - name: Run Semgrep — custom taint rules (blocking)
+        run: |
+          semgrep scan \
+            --config policies/semgrep/ \
+            --sarif --output semgrep-custom.sarif \
+            --error \
+            src/
+
+      - name: Run Semgrep — advisory rules (non-blocking)
+        run: |
+          semgrep scan \
+            --config p/python \
+            --sarif --output semgrep-advisory.sarif \
+            --no-error \
+            src/ || true
+
+      - name: Upload Semgrep SARIF — secrets
+        if: always()
+        uses: github/codeql-action/upload-sarif@c10b8064de6f491fea524254123dbe5e09572f13
+        with:
+          sarif_file: semgrep-secrets.sarif
+          category: semgrep-secrets
+
+      - name: Upload Semgrep SARIF — custom rules
+        if: always()
+        uses: github/codeql-action/upload-sarif@c10b8064de6f491fea524254123dbe5e09572f13
+        with:
+          sarif_file: semgrep-custom.sarif
+          category: semgrep-custom
+
+      - name: Upload Semgrep SARIF — advisory
+        if: always()
+        uses: github/codeql-action/upload-sarif@c10b8064de6f491fea524254123dbe5e09572f13
+        with:
+          sarif_file: semgrep-advisory.sarif
+          category: semgrep-advisory

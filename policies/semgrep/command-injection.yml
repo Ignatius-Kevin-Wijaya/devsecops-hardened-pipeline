@@ -1,0 +1,21 @@
+rules:
+  - id: command-injection-from-request
+    message: |
+      Unsanitized user input from an HTTP request reaches a subprocess call —
+      potential command injection (CWE-78). Sanitize input or use a
+      parameterized API such as subprocess.run with a list argument.
+    severity: ERROR
+    languages: [python]
+    mode: taint
+    pattern-sources:
+      - pattern: request.args.get(...)
+      - pattern: request.form.get(...)
+      - pattern: request.json.get(...)
+    pattern-sinks:
+      - pattern: subprocess.run(...)
+      - pattern: subprocess.call(...)
+      - pattern: os.system(...)
+    metadata:
+      category: security
+      cwe: CWE-78
+      confidence: HIGH
