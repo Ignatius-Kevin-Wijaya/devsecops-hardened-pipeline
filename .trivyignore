@@ -1,0 +1,19 @@
+# .trivyignore — Documented risk acceptances
+#
+# Each suppression below is an explicit architectural decision, not a blanket
+# ignore. See docs/architecture/ for the relevant ADRs.
+#
+# Format: <AVD-ID or CVE-ID>  # reason
+
+# KSV106 — Container capabilities must only include NET_BIND_SERVICE
+# Our deployment drops ALL capabilities already; this check flags the absence
+# of an explicit `add: []` list. Runtime default without NET_RAW is equivalent.
+# Risk: LOW — all capabilities are dropped, attack surface is minimal.
+AVD-KSV-0106
+
+# DS026 — Do not use the :latest tag
+# The Dockerfile itself does not reference :latest; the deployment.yml image
+# field uses :latest as a placeholder replaced by the release pipeline with a
+# pinned digest. Trivy sees the YAML literal, not the runtime value.
+# Risk: Accepted — actual deployments always use digest references.
+AVD-DS-0026
