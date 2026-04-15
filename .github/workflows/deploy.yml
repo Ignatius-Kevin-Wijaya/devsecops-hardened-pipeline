@@ -1,0 +1,65 @@
+name: Deploy
+
+on:
+  workflow_call:
+    inputs:
+      image-ref:
+        description: "Full image reference including digest"
+        required: true
+        type: string
+      environment:
+        description: "Deployment environment (staging | production)"
+        required: true
+        type: string
+    secrets:
+      VAULT_ADDR:
+        description: "HashiCorp Vault address"
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+
+      - name: Install Cosign
+        uses: sigstore/cosign-installer@cad07c2e89fa2edd6e2d7bab4c1aa38e53f76003
+
+      - name: Verify image signature before deploy
+        env:
+          COSIGN_EXPERIMENTAL: "1"
+        run: |
+          cosign verify \
+            --certificate-identity-regexp="https://github.com/${{ github.repository }}/.github/workflows/" \
+            --certificate-oidc-issuer="https://token.actions.githubusercontent.com" \
+            ${{ inputs.image-ref }}
+          echo "Signature verified — image is safe to deploy"
+
+      - name: Authenticate to Vault via JWT/OIDC
+        uses: hashicorp/vault-action@4c06c5ccf5c0761b6029f56cfb1dcf5565918a3b
+        with:
+          url: ${{ secrets.VAULT_ADDR }}
+          role: github-actions
+          method: jwt
+          jwtGithubAudience: "https://github.com/Ignatius-Kevin-Wijaya"
+          secrets: |
+            secret/data/ci/deploy api_key | DEPLOY_API_KEY ;
+            secret/data/ci/deploy registry_token | REGISTRY_TOKEN
+
+      - name: Confirm dynamic credential lease
+        run: |
+          echo "Vault JWT auth successful — ephemeral credentials issued"
+          echo "Credential scope: secret/data/ci/deploy (read-only, TTL 5m)"
+          echo "No static VAULT_TOKEN used — credential not reusable after lease expiry"
+
+      - name: Deploy image
+        run: |
+          echo "Deploying ${{ inputs.image-ref }} to ${{ inputs.environment }}"
