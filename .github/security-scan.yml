@@ -94,3 +94,92 @@ jobs:
         with:
           sarif_file: semgrep-advisory.sarif
           category: semgrep-advisory
+
+  trivy-image:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+
+      - name: Build image for scanning
+        run: |
+          docker build -t ${{ inputs.registry }}/${{ inputs.image-name }}:${{ github.sha }} .
+
+      - name: Trivy image scan — CRITICAL (blocking)
+        uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1
+        with:
+          image-ref: ${{ inputs.registry }}/${{ inputs.image-name }}:${{ github.sha }}
+          format: sarif
+          output: trivy-critical.sarif
+          severity: CRITICAL
+          exit-code: "1"
+
+      - name: Trivy image scan — HIGH,MEDIUM (advisory)
+        if: always()
+        uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1
+        with:
+          image-ref: ${{ inputs.registry }}/${{ inputs.image-name }}:${{ github.sha }}
+          format: sarif
+          output: trivy-advisory.sarif
+          severity: HIGH,MEDIUM
+          exit-code: "0"
+
+      - name: Upload Trivy SARIF — critical
+        if: always()
+        uses: github/codeql-action/upload-sarif@c10b8064de6f491fea524254123dbe5e09572f13
+        with:
+          sarif_file: trivy-critical.sarif
+          category: trivy-critical
+
+      - name: Upload Trivy SARIF — advisory
+        if: always()
+        uses: github/codeql-action/upload-sarif@c10b8064de6f491fea524254123dbe5e09572f13
+        with:
+          sarif_file: trivy-advisory.sarif
+          category: trivy-advisory
+
+  trivy-iac:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+
+      - name: Trivy IaC scan — Kubernetes manifests
+        uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1
+        with:
+          scan-type: config
+          scan-ref: k8s/
+          format: sarif
+          output: trivy-iac-k8s.sarif
+          exit-code: "1"
+          severity: CRITICAL,HIGH
+
+      - name: Trivy IaC scan — Dockerfile
+        if: always()
+        uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1
+        with:
+          scan-type: config
+          scan-ref: Dockerfile
+          format: sarif
+          output: trivy-iac-docker.sarif
+          exit-code: "0"
+
+      - name: Upload Trivy IaC SARIF — Kubernetes
+        if: always()
+        uses: github/codeql-action/upload-sarif@c10b8064de6f491fea524254123dbe5e09572f13
+        with:
+          sarif_file: trivy-iac-k8s.sarif
+          category: trivy-iac-k8s
+
+      - name: Upload Trivy IaC SARIF — Dockerfile
+        if: always()
+        uses: github/codeql-action/upload-sarif@c10b8064de6f491fea524254123dbe5e09572f13
+        with:
+          sarif_file: trivy-iac-docker.sarif
+          category: trivy-iac-docker
