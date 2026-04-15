@@ -1,0 +1,22 @@
+name: CI
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+    branches: ["main"]
+
+permissions:
+  contents: read
+
+jobs:
+  security-scan:
+    uses: ./.github/workflows/security-scan.yml
+    with:
+      image-name: "devsecops-demo"
+      registry: "ghcr.io/ignatius-kevin-wijaya"
+    permissions:
+      contents: read
+      security-events: write
+      packages: write
+    secrets: inherit

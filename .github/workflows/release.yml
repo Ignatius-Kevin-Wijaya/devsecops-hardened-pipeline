@@ -1,0 +1,72 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  security-scan:
+    uses: ./.github/workflows/security-scan.yml
+    with:
+      image-name: "devsecops-demo"
+      registry: "ghcr.io/ignatius-kevin-wijaya"
+    permissions:
+      contents: read
+      security-events: write
+      packages: write
+    secrets: inherit
+
+  build-push-sign:
+    runs-on: ubuntu-latest
+    needs: security-scan
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+    outputs:
+      image-ref: ${{ steps.push.outputs.image-ref }}
+
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+
+      - name: Extract Docker metadata
+        id: meta
+        uses: docker/metadata-action@902fa8ec7d6ecbf8d84d538b9b233a880e428804
+        with:
+          images: ghcr.io/ignatius-kevin-wijaya/devsecops-demo
+
+      - name: Log in to GHCR
+        uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push image
+        id: push
+        uses: docker/build-push-action@bcafcacb16a39f128d818304e6c9c0c18556b85f
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+
+      - name: Export digest image ref
+        run: |
+          echo "image-ref=ghcr.io/ignatius-kevin-wijaya/devsecops-demo@${{ steps.push.outputs.digest }}" \
+            >> "$GITHUB_OUTPUT"
+
+  sign:
+    needs: build-push-sign
+    uses: ./.github/workflows/image-sign.yml
+    with:
+      image-ref: ${{ needs.build-push-sign.outputs.image-ref }}
+      registry: ghcr.io
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+    secrets: inherit

@@ -1,0 +1,86 @@
+name: Image Sign and Attest
+
+on:
+  workflow_call:
+    inputs:
+      image-ref:
+        description: "Full image reference including digest (registry/image@sha256:...)"
+        required: true
+        type: string
+      registry:
+        description: "Container registry hostname"
+        required: true
+        type: string
+    outputs:
+      sbom-artifact-name:
+        description: "Name of the uploaded SBOM artifact"
+        value: ${{ jobs.sign-and-attest.outputs.sbom-artifact-name }}
+
+permissions:
+  contents: read
+
+jobs:
+  sign-and-attest:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+
+    outputs:
+      sbom-artifact-name: ${{ steps.set-output.outputs.sbom-artifact-name }}
+
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+
+      - name: Install Cosign
+        uses: sigstore/cosign-installer@cad07c2e89fa2edd6e2d7bab4c1aa38e53f76003
+
+      - name: Log in to registry
+        uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121
+        with:
+          registry: ${{ inputs.registry }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Generate CycloneDX SBOM with Syft
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610
+        with:
+          image: ${{ inputs.image-ref }}
+          format: cyclonedx-json
+          output-file: sbom.cyclonedx.json
+          artifact-name: sbom-${{ github.sha }}.cyclonedx.json
+          upload-artifact: true
+          upload-release-assets: true
+
+      - name: Set SBOM output name
+        id: set-output
+        run: echo "sbom-artifact-name=sbom-${{ github.sha }}.cyclonedx.json" >> "$GITHUB_OUTPUT"
+
+      - name: Verify SBOM generated correctly
+        run: |
+          python3 scripts/query-sbom.py sbom.cyclonedx.json
+
+      - name: Sign image with Cosign keyless (OIDC)
+        env:
+          COSIGN_EXPERIMENTAL: "1"
+        run: |
+          cosign sign --yes ${{ inputs.image-ref }}
+
+      - name: Attest SBOM to image with Cosign
+        env:
+          COSIGN_EXPERIMENTAL: "1"
+        run: |
+          cosign attest --yes \
+            --predicate sbom.cyclonedx.json \
+            --type cyclonedx \
+            ${{ inputs.image-ref }}
+
+      - name: Verify image signature
+        env:
+          COSIGN_EXPERIMENTAL: "1"
+        run: |
+          cosign verify \
+            --certificate-identity-regexp="https://github.com/${{ github.repository }}/.github/workflows/" \
+            --certificate-oidc-issuer="https://token.actions.githubusercontent.com" \
+            ${{ inputs.image-ref }}
