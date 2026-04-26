@@ -69,7 +69,7 @@ jobs:
 
       - name: Render deployment manifest with pinned digest
         run: |
-          sed "s|ghcr.io/ignatius-kevin-wijaya/devsecops-demo:latest|${{ inputs.image-ref }}|" \
+          sed "s|ghcr.io/ignatius-kevin-wijaya/devsecops-demo:release-placeholder|${{ inputs.image-ref }}|" \
             "${{ inputs.manifest-path }}" > rendered-deployment.yml
 
       - name: Verify rendered manifest uses digest

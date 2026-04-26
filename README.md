@@ -84,6 +84,6 @@ semgrep scan --config policies/semgrep tests/semgrep
 
 ## Deployment Notes
 
-- The checked-in Kubernetes manifest intentionally keeps a `:latest` placeholder for readability.
+- The checked-in Kubernetes manifest intentionally keeps a non-runnable release placeholder tag that the deploy workflow replaces with a pinned digest.
 - The deploy workflow renders a deployment manifest with a pinned image digest before apply.
 - The trusted-image Gatekeeper constraint starts in `dryrun` mode so clusters can baseline violations before switching to deny.

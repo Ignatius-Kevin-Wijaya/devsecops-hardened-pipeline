@@ -20,7 +20,7 @@ spec:
           type: RuntimeDefault
       containers:
         - name: app
-          image: ghcr.io/ignatius-kevin-wijaya/devsecops-demo:latest
+          image: ghcr.io/ignatius-kevin-wijaya/devsecops-demo:release-placeholder
           ports:
             - containerPort: 8080
               protocol: TCP
