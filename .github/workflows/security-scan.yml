@@ -208,37 +208,69 @@ jobs:
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
 
+      - name: Install Trivy
+        run: |
+          TRIVY_VERSION="0.69.3"
+          curl -sfL \
+            "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz" \
+            -o trivy.tar.gz
+          tar -xzf trivy.tar.gz trivy
+          install -m 0755 trivy "$HOME/.local/bin/trivy"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          "$HOME/.local/bin/trivy" --version
+
+      - name: Trivy IaC scan — Kubernetes manifests summary
+        if: always()
+        run: |
+          trivy config \
+            --skip-version-check \
+            --severity CRITICAL,HIGH \
+            --ignorefile .trivyignore \
+            k8s/ || true
+
       - name: Trivy IaC scan — Kubernetes manifests
-        uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1
-        with:
-          scan-type: config
-          scan-ref: k8s/
-          format: sarif
-          output: trivy-iac-k8s.sarif
-          exit-code: "1"
-          severity: CRITICAL,HIGH
-          trivyignores: .trivyignore
+        run: |
+          set +e
+          trivy config \
+            --skip-version-check \
+            --severity CRITICAL,HIGH \
+            --ignorefile .trivyignore \
+            --format sarif \
+            --output trivy-iac-k8s.sarif \
+            k8s/
+          TRIVY_EXIT=$?
+
+          if [ ! -f trivy-iac-k8s.sarif ]; then
+            echo '{"version":"2.1.0","$schema":"https://json.schemastore.org/sarif-2.1.0.json","runs":[{"tool":{"driver":{"name":"Trivy","rules":[]}},"results":[]}]}' \
+              > trivy-iac-k8s.sarif
+          fi
+
+          exit $TRIVY_EXIT
 
       - name: Trivy IaC scan — Dockerfile
         if: always()
-        uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1
-        with:
-          scan-type: config
-          scan-ref: Dockerfile
-          format: sarif
-          output: trivy-iac-docker.sarif
-          exit-code: "0"
-          trivyignores: .trivyignore
+        run: |
+          trivy config \
+            --skip-version-check \
+            --ignorefile .trivyignore \
+            --format sarif \
+            --output trivy-iac-docker.sarif \
+            Dockerfile || true
+
+          if [ ! -f trivy-iac-docker.sarif ]; then
+            echo '{"version":"2.1.0","$schema":"https://json.schemastore.org/sarif-2.1.0.json","runs":[{"tool":{"driver":{"name":"Trivy","rules":[]}},"results":[]}]}' \
+              > trivy-iac-docker.sarif
+          fi
 
       - name: Upload Trivy IaC SARIF — Kubernetes
-        if: always()
+        if: always() && hashFiles('trivy-iac-k8s.sarif') != ''
         uses: github/codeql-action/upload-sarif@c10b8064de6f491fea524254123dbe5e09572f13
         with:
           sarif_file: trivy-iac-k8s.sarif
           category: trivy-iac-k8s
 
       - name: Upload Trivy IaC SARIF — Dockerfile
-        if: always()
+        if: always() && hashFiles('trivy-iac-docker.sarif') != ''
         uses: github/codeql-action/upload-sarif@c10b8064de6f491fea524254123dbe5e09572f13
         with:
           sarif_file: trivy-iac-docker.sarif
