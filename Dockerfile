@@ -6,7 +6,11 @@ RUN pip install --no-cache-dir --prefix=/install -r requirements.txt
 
 FROM python:3.12-slim
 
-RUN groupadd -r appuser && useradd -r -g appuser -s /sbin/nologin appuser
+RUN apt-get update \
+    && apt-get upgrade -y \
+    && rm -rf /var/lib/apt/lists/* \
+    && groupadd -r appuser \
+    && useradd -r -g appuser -s /sbin/nologin appuser
 
 COPY --from=builder /install /usr/local
 COPY src/app.py /app/app.py

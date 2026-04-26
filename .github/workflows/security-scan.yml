@@ -127,38 +127,73 @@ jobs:
         run: |
           docker build -t ${{ inputs.registry }}/${{ inputs.image-name }}:${{ github.sha }} .
 
+      - name: Install Trivy
+        run: |
+          TRIVY_VERSION="0.69.3"
+          curl -sfL \
+            "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz" \
+            -o trivy.tar.gz
+          tar -xzf trivy.tar.gz trivy
+          install -m 0755 trivy "$HOME/.local/bin/trivy"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          "$HOME/.local/bin/trivy" --version
+
+      - name: Trivy image scan — CRITICAL summary
+        if: always()
+        run: |
+          trivy image \
+            --scanners vuln \
+            --skip-version-check \
+            --ignore-unfixed \
+            --severity CRITICAL \
+            ${{ inputs.registry }}/${{ inputs.image-name }}:${{ github.sha }} || true
+
       - name: Trivy image scan — CRITICAL with fix available (blocking)
-        uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1
-        with:
-          image-ref: ${{ inputs.registry }}/${{ inputs.image-name }}:${{ github.sha }}
-          format: sarif
-          output: trivy-critical.sarif
-          severity: CRITICAL
-          ignore-unfixed: true
-          exit-code: "1"
-          trivyignores: .trivyignore
+        run: |
+          set +e
+          trivy image \
+            --scanners vuln \
+            --skip-version-check \
+            --ignore-unfixed \
+            --severity CRITICAL \
+            --format sarif \
+            --output trivy-critical.sarif \
+            ${{ inputs.registry }}/${{ inputs.image-name }}:${{ github.sha }}
+          TRIVY_EXIT=$?
+
+          if [ ! -f trivy-critical.sarif ]; then
+            echo '{"version":"2.1.0","$schema":"https://json.schemastore.org/sarif-2.1.0.json","runs":[{"tool":{"driver":{"name":"Trivy","rules":[]}},"results":[]}]}' \
+              > trivy-critical.sarif
+          fi
+
+          exit $TRIVY_EXIT
 
       - name: Trivy image scan — HIGH,MEDIUM advisory
         if: always()
-        uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1
-        with:
-          image-ref: ${{ inputs.registry }}/${{ inputs.image-name }}:${{ github.sha }}
-          format: sarif
-          output: trivy-advisory.sarif
-          severity: HIGH,MEDIUM
-          ignore-unfixed: true
-          exit-code: "0"
-          trivyignores: .trivyignore
+        run: |
+          trivy image \
+            --scanners vuln \
+            --skip-version-check \
+            --ignore-unfixed \
+            --severity HIGH,MEDIUM \
+            --format sarif \
+            --output trivy-advisory.sarif \
+            ${{ inputs.registry }}/${{ inputs.image-name }}:${{ github.sha }} || true
+
+          if [ ! -f trivy-advisory.sarif ]; then
+            echo '{"version":"2.1.0","$schema":"https://json.schemastore.org/sarif-2.1.0.json","runs":[{"tool":{"driver":{"name":"Trivy","rules":[]}},"results":[]}]}' \
+              > trivy-advisory.sarif
+          fi
 
       - name: Upload Trivy SARIF — critical
-        if: always()
+        if: always() && hashFiles('trivy-critical.sarif') != ''
         uses: github/codeql-action/upload-sarif@c10b8064de6f491fea524254123dbe5e09572f13
         with:
           sarif_file: trivy-critical.sarif
           category: trivy-critical
 
       - name: Upload Trivy SARIF — advisory
-        if: always()
+        if: always() && hashFiles('trivy-advisory.sarif') != ''
         uses: github/codeql-action/upload-sarif@c10b8064de6f491fea524254123dbe5e09572f13
         with:
           sarif_file: trivy-advisory.sarif
