@@ -11,6 +11,11 @@ on:
         description: "Deployment environment (staging | production)"
         required: true
         type: string
+      manifest-path:
+        description: "Kubernetes Deployment manifest to render with the pinned digest"
+        required: false
+        default: "k8s/deployment.yml"
+        type: string
     secrets:
       VAULT_ADDR:
         description: "HashiCorp Vault address"
@@ -51,15 +56,27 @@ jobs:
           method: jwt
           jwtGithubAudience: "https://github.com/Ignatius-Kevin-Wijaya"
           secrets: |
-            secret/data/ci/deploy api_key | DEPLOY_API_KEY ;
-            secret/data/ci/deploy registry_token | REGISTRY_TOKEN
+            database/creds/ci-role username | DB_USERNAME ;
+            database/creds/ci-role password | DB_PASSWORD
 
-      - name: Confirm dynamic credential lease
+      - name: Confirm dynamic credential pull
         run: |
-          echo "Vault JWT auth successful — ephemeral credentials issued"
-          echo "Credential scope: secret/data/ci/deploy (read-only, TTL 5m)"
-          echo "No static VAULT_TOKEN used — credential not reusable after lease expiry"
+          test -n "${DB_USERNAME:-}"
+          test -n "${DB_PASSWORD:-}"
+          echo "Vault JWT auth successful — short-lived database credentials issued"
+          echo "Lease scope: database/creds/ci-role"
+          echo "No static VAULT_TOKEN used in the workflow"
+
+      - name: Render deployment manifest with pinned digest
+        run: |
+          sed "s|ghcr.io/ignatius-kevin-wijaya/devsecops-demo:latest|${{ inputs.image-ref }}|" \
+            "${{ inputs.manifest-path }}" > rendered-deployment.yml
+
+      - name: Verify rendered manifest uses digest
+        run: |
+          grep -q "${{ inputs.image-ref }}" rendered-deployment.yml
 
       - name: Deploy image
         run: |
           echo "Deploying ${{ inputs.image-ref }} to ${{ inputs.environment }}"
+          echo "Rendered manifest: rendered-deployment.yml"

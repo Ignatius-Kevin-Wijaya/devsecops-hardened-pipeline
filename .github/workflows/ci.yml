@@ -18,5 +18,4 @@ jobs:
     permissions:
       contents: read
       security-events: write
-      packages: write
     secrets: inherit
