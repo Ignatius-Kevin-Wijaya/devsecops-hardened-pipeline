@@ -1,0 +1,86 @@
+apiVersion: templates.gatekeeper.sh/v1
+kind: ConstraintTemplate
+metadata:
+  name: k8strustedimagedigest
+spec:
+  crd:
+    spec:
+      names:
+        kind: K8sTrustedImageDigest
+      validation:
+        openAPIV3Schema:
+          type: object
+          properties:
+            repos:
+              type: array
+              items:
+                type: string
+  targets:
+    - target: admission.k8s.gatekeeper.sh
+      rego: |
+        package k8strustedimagedigest
+
+        containers[container] {
+          input.review.kind.kind == "Pod"
+          container := input.review.object.spec.containers[_]
+        }
+
+        containers[container] {
+          input.review.kind.kind == "CronJob"
+          container := input.review.object.spec.jobTemplate.spec.template.spec.containers[_]
+        }
+
+        containers[container] {
+          input.review.kind.kind != "Pod"
+          input.review.kind.kind != "CronJob"
+          container := input.review.object.spec.template.spec.containers[_]
+        }
+
+        containers[container] {
+          input.review.kind.kind == "Pod"
+          container := input.review.object.spec.initContainers[_]
+        }
+
+        containers[container] {
+          input.review.kind.kind == "CronJob"
+          container := input.review.object.spec.jobTemplate.spec.template.spec.initContainers[_]
+        }
+
+        containers[container] {
+          input.review.kind.kind != "Pod"
+          input.review.kind.kind != "CronJob"
+          container := input.review.object.spec.template.spec.initContainers[_]
+        }
+
+        containers[container] {
+          input.review.kind.kind == "Pod"
+          container := input.review.object.spec.ephemeralContainers[_]
+        }
+
+        containers[container] {
+          input.review.kind.kind == "CronJob"
+          container := input.review.object.spec.jobTemplate.spec.template.spec.ephemeralContainers[_]
+        }
+
+        containers[container] {
+          input.review.kind.kind != "Pod"
+          input.review.kind.kind != "CronJob"
+          container := input.review.object.spec.template.spec.ephemeralContainers[_]
+        }
+
+        trusted_repo(image) {
+          repo := input.parameters.repos[_]
+          startswith(image, repo)
+        }
+
+        violation[{"msg": msg}] {
+          container := containers[_]
+          not trusted_repo(container.image)
+          msg := sprintf("container %q image %q must come from an approved registry prefix", [container.name, container.image])
+        }
+
+        violation[{"msg": msg}] {
+          container := containers[_]
+          not contains(container.image, "@sha256:")
+          msg := sprintf("container %q image %q must be pinned by digest", [container.name, container.image])
+        }

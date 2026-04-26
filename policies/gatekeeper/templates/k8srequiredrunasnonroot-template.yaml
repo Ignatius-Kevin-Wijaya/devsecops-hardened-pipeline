@@ -1,0 +1,67 @@
+apiVersion: templates.gatekeeper.sh/v1
+kind: ConstraintTemplate
+metadata:
+  name: k8srequiredrunasnonroot
+spec:
+  crd:
+    spec:
+      names:
+        kind: K8sRequiredRunAsNonRoot
+  targets:
+    - target: admission.k8s.gatekeeper.sh
+      rego: |
+        package k8srequiredrunasnonroot
+
+        containers[container] {
+          input.review.kind.kind == "Pod"
+          container := input.review.object.spec.containers[_]
+        }
+
+        containers[container] {
+          input.review.kind.kind == "CronJob"
+          container := input.review.object.spec.jobTemplate.spec.template.spec.containers[_]
+        }
+
+        containers[container] {
+          input.review.kind.kind != "Pod"
+          input.review.kind.kind != "CronJob"
+          container := input.review.object.spec.template.spec.containers[_]
+        }
+
+        containers[container] {
+          input.review.kind.kind == "Pod"
+          container := input.review.object.spec.initContainers[_]
+        }
+
+        containers[container] {
+          input.review.kind.kind == "CronJob"
+          container := input.review.object.spec.jobTemplate.spec.template.spec.initContainers[_]
+        }
+
+        containers[container] {
+          input.review.kind.kind != "Pod"
+          input.review.kind.kind != "CronJob"
+          container := input.review.object.spec.template.spec.initContainers[_]
+        }
+
+        containers[container] {
+          input.review.kind.kind == "Pod"
+          container := input.review.object.spec.ephemeralContainers[_]
+        }
+
+        containers[container] {
+          input.review.kind.kind == "CronJob"
+          container := input.review.object.spec.jobTemplate.spec.template.spec.ephemeralContainers[_]
+        }
+
+        containers[container] {
+          input.review.kind.kind != "Pod"
+          input.review.kind.kind != "CronJob"
+          container := input.review.object.spec.template.spec.ephemeralContainers[_]
+        }
+
+        violation[{"msg": msg}] {
+          container := containers[_]
+          not container.securityContext.runAsNonRoot == true
+          msg := sprintf("container %q must set securityContext.runAsNonRoot=true", [container.name])
+        }
