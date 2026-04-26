@@ -5,20 +5,43 @@ Reusable GitHub Actions workflows secure, sign, attest, and prepare deployment o
 ## Architecture
 
 ```mermaid
-flowchart LR
-    Dev[Developer Push or PR] --> CI[CI Workflow]
-    CI --> GL[Gitleaks]
-    CI --> SG[Semgrep]
-    CI --> TI[Trivy IaC and Image]
-    TI --> RP[Release Workflow]
-    RP --> BP[Build and Push Image]
-    BP --> TR[Trivy Digest Scan]
-    TR --> SBOM[Syft SBOM]
-    SBOM --> CS[Cosign Sign and Attest]
-    CS --> DV[Deploy Workflow Verify]
-    DV --> VT[Vault JWT Auth]
-    VT --> KM[Render Kubernetes Manifest with Digest]
-    KM --> CL[Cluster Admission Policies]
+flowchart TD
+    Dev[Developer Push or PR] --> CI
+
+    subgraph CI[CI Security Scan Workflow]
+        direction TB
+        GL[Gitleaks]
+        SG[Semgrep]
+        TI[Trivy Image and IaC]
+    end
+
+    CI --> Release
+
+    subgraph Release[Release Pipeline]
+        direction TB
+        BP[Build and Push Image]
+        TD[Trivy Digest Scan]
+        SBOM[Syft SBOM]
+        CS[Cosign Sign and Attest]
+        BP --> TD --> SBOM --> CS
+    end
+
+    Release --> Deploy
+
+    subgraph Deploy[Deploy Workflow]
+        direction TB
+        Verify[Verify Cosign Signature]
+        Vault[Vault JWT Auth]
+        Render[Render Manifest with Pinned Digest]
+        Verify --> Vault --> Render
+    end
+
+    Deploy --> Cluster
+
+    subgraph Cluster[Runtime Enforcement]
+        direction TB
+        Gatekeeper[Gatekeeper Admission Policies]
+    end
 ```
 
 ## Security Controls
