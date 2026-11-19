@@ -18,4 +18,46 @@ jobs:
     permissions:
       contents: read
       security-events: write
-    secrets: inherit
+
+  shellcheck:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+
+      - name: ShellCheck the CI and Vault scripts
+        run: |
+          shellcheck --version
+          shellcheck scripts/ci/*.sh vault/config/*.sh
+
+  admission-tests:
+    name: Gatekeeper admission tests (kind)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+
+      - name: Create kind with Gatekeeper enforcing this repository's policies
+        run: bash scripts/ci/kind-up.sh
+
+      - name: Admission tests (server-side dry run)
+        # Dry runs never pull the image, so a placeholder digest is enough here.
+        # The release workflow runs the same tests against the real digest.
+        run: |
+          placeholder_digest="sha256:$(printf '0%.0s' $(seq 64))"
+          bash scripts/ci/admission-tests.sh "ghcr.io/ignatius-kevin-wijaya/devsecops-demo@${placeholder_digest}"
+
+      - name: Diagnostics on failure
+        if: failure()
+        run: |
+          command -v kubectl > /dev/null || exit 0
+          kubectl get pods -A -o wide || true
+          kubectl get constrainttemplates -o yaml || true
+          kubectl get constraints -o yaml || true
+          kubectl -n gatekeeper-system logs deployment/gatekeeper-controller-manager --tail=100 || true

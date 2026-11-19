@@ -3,7 +3,7 @@ kind: K8sTrustedImageDigest
 metadata:
   name: require-trusted-image-digest
 spec:
-  enforcementAction: dryrun
+  enforcementAction: deny
   match:
     kinds:
       - apiGroups: [""]
