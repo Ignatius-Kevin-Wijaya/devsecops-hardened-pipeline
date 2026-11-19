@@ -1,13 +1,62 @@
 name: Security Scan
 
+# Reusable. Called from this repository by ci.yml and release.yml, and from
+# other repositories like this:
+#
+#   uses: Ignatius-Kevin-Wijaya/devsecops-hardened-pipeline/.github/workflows/security-scan.yml@<tag>
+#   with:
+#     image-name: my-app
+#     registry: ghcr.io/my-org
+#     policy-ref: <same tag>   # shared Semgrep rules and Gitleaks config are loaded from it
+
 on:
   workflow_call:
     inputs:
       image-name:
+        description: "Image name for the local scan build"
         required: true
         type: string
       registry:
+        description: "Registry prefix for the local scan build tag"
         required: true
+        type: string
+      source-path:
+        description: "Application source scanned by Semgrep"
+        required: false
+        default: "src/"
+        type: string
+      k8s-path:
+        description: "Kubernetes manifests scanned by Trivy"
+        required: false
+        default: "k8s/"
+        type: string
+      dockerfile:
+        description: "Dockerfile that is built and scanned"
+        required: false
+        default: "Dockerfile"
+        type: string
+      build-context:
+        description: "Docker build context"
+        required: false
+        default: "."
+        type: string
+      trivyignore:
+        description: "Trivy ignore file in the caller's repository"
+        required: false
+        default: ".trivyignore"
+        type: string
+      policy-repository:
+        description: "Repository holding the shared Semgrep rules and Gitleaks config"
+        required: false
+        default: "Ignatius-Kevin-Wijaya/devsecops-hardened-pipeline"
+        type: string
+      policy-ref:
+        description: >-
+          Ref of policy-repository to load the shared rules from. Leave empty only
+          when the caller is policy-repository itself; other callers pass the ref
+          they pin this workflow to.
+        required: false
+        default: ""
         type: string
 
 permissions:
@@ -21,9 +70,25 @@ jobs:
       security-events: write
 
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           fetch-depth: 0
+          persist-credentials: false
+
+      - name: Require policy-ref for cross-repository calls
+        if: inputs.policy-ref == '' && github.repository != inputs.policy-repository
+        run: |
+          echo "::error::Set the policy-ref input to the ref you pinned this workflow to."
+          exit 1
+
+      - name: Check out shared policies
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          repository: ${{ inputs.policy-ref == '' && github.repository || inputs.policy-repository }}
+          ref: ${{ inputs.policy-ref }}
+          path: .devsecops-policy
+          sparse-checkout: policies/semgrep
+          persist-credentials: false
 
       - name: Install Gitleaks
         run: |
@@ -38,7 +103,7 @@ jobs:
           gitleaks detect \
             --source . \
             --log-opts="--all" \
-            --config .gitleaks.toml \
+            --config .devsecops-policy/.gitleaks.toml \
             --report-format sarif \
             --report-path gitleaks-report.sarif \
             --exit-code 1 || GITLEAKS_EXIT=$?
@@ -51,8 +116,8 @@ jobs:
           exit ${GITLEAKS_EXIT:-0}
 
       - name: Upload SARIF to Security tab
-        if: always()
-        uses: github/codeql-action/upload-sarif@c10b8064de6f491fea524254123dbe5e09572f13
+        if: always() && hashFiles('gitleaks-report.sarif') != ''
+        uses: github/codeql-action/upload-sarif@c10b8064de6f491fea524254123dbe5e09572f13 # v4.35.1
         with:
           sarif_file: gitleaks-report.sarif
           category: gitleaks
@@ -62,9 +127,28 @@ jobs:
     permissions:
       contents: read
       security-events: write
+    env:
+      SOURCE_PATH: ${{ inputs.source-path }}
 
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+
+      - name: Require policy-ref for cross-repository calls
+        if: inputs.policy-ref == '' && github.repository != inputs.policy-repository
+        run: |
+          echo "::error::Set the policy-ref input to the ref you pinned this workflow to."
+          exit 1
+
+      - name: Check out shared policies
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          repository: ${{ inputs.policy-ref == '' && github.repository || inputs.policy-repository }}
+          ref: ${{ inputs.policy-ref }}
+          path: .devsecops-policy
+          sparse-checkout: policies/semgrep
+          persist-credentials: false
 
       - name: Install Semgrep
         run: pip install semgrep==1.67.0
@@ -75,15 +159,15 @@ jobs:
             --config p/secrets \
             --sarif --output semgrep-secrets.sarif \
             --error \
-            src/ || true
+            "$SOURCE_PATH"
 
       - name: Run Semgrep — custom taint rules (blocking)
         run: |
           semgrep scan \
-            --config policies/semgrep/ \
+            --config .devsecops-policy/policies/semgrep/ \
             --sarif --output semgrep-custom.sarif \
             --error \
-            src/
+            "$SOURCE_PATH"
 
       - name: Run Semgrep — advisory rules (non-blocking)
         run: |
@@ -91,25 +175,25 @@ jobs:
             --config p/python \
             --sarif --output semgrep-advisory.sarif \
             --no-error \
-            src/ || true
+            "$SOURCE_PATH" || true
 
       - name: Upload Semgrep SARIF — secrets
-        if: always()
-        uses: github/codeql-action/upload-sarif@c10b8064de6f491fea524254123dbe5e09572f13
+        if: always() && hashFiles('semgrep-secrets.sarif') != ''
+        uses: github/codeql-action/upload-sarif@c10b8064de6f491fea524254123dbe5e09572f13 # v4.35.1
         with:
           sarif_file: semgrep-secrets.sarif
           category: semgrep-secrets
 
       - name: Upload Semgrep SARIF — custom rules
-        if: always()
-        uses: github/codeql-action/upload-sarif@c10b8064de6f491fea524254123dbe5e09572f13
+        if: always() && hashFiles('semgrep-custom.sarif') != ''
+        uses: github/codeql-action/upload-sarif@c10b8064de6f491fea524254123dbe5e09572f13 # v4.35.1
         with:
           sarif_file: semgrep-custom.sarif
           category: semgrep-custom
 
       - name: Upload Semgrep SARIF — advisory
-        if: always()
-        uses: github/codeql-action/upload-sarif@c10b8064de6f491fea524254123dbe5e09572f13
+        if: always() && hashFiles('semgrep-advisory.sarif') != ''
+        uses: github/codeql-action/upload-sarif@c10b8064de6f491fea524254123dbe5e09572f13 # v4.35.1
         with:
           sarif_file: semgrep-advisory.sarif
           category: semgrep-advisory
@@ -119,13 +203,19 @@ jobs:
     permissions:
       contents: read
       security-events: write
+    env:
+      SCAN_IMAGE: ${{ inputs.registry }}/${{ inputs.image-name }}:${{ github.sha }}
+      DOCKERFILE: ${{ inputs.dockerfile }}
+      BUILD_CONTEXT: ${{ inputs.build-context }}
 
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
 
       - name: Build image for scanning
         run: |
-          docker build -t ${{ inputs.registry }}/${{ inputs.image-name }}:${{ github.sha }} .
+          docker build -f "$DOCKERFILE" -t "$SCAN_IMAGE" "$BUILD_CONTEXT"
 
       - name: Install Trivy
         run: |
@@ -147,7 +237,7 @@ jobs:
             --skip-version-check \
             --ignore-unfixed \
             --severity CRITICAL \
-            ${{ inputs.registry }}/${{ inputs.image-name }}:${{ github.sha }} || true
+            "$SCAN_IMAGE" || true
 
       - name: Trivy image scan — CRITICAL with fix available (blocking)
         run: |
@@ -159,7 +249,7 @@ jobs:
             --severity CRITICAL \
             --format sarif \
             --output trivy-critical.sarif \
-            ${{ inputs.registry }}/${{ inputs.image-name }}:${{ github.sha }}
+            "$SCAN_IMAGE"
           TRIVY_EXIT=$?
 
           if [ ! -f trivy-critical.sarif ]; then
@@ -179,7 +269,7 @@ jobs:
             --severity HIGH,MEDIUM \
             --format sarif \
             --output trivy-advisory.sarif \
-            ${{ inputs.registry }}/${{ inputs.image-name }}:${{ github.sha }} || true
+            "$SCAN_IMAGE" || true
 
           if [ ! -f trivy-advisory.sarif ]; then
             echo '{"version":"2.1.0","$schema":"https://json.schemastore.org/sarif-2.1.0.json","runs":[{"tool":{"driver":{"name":"Trivy","rules":[]}},"results":[]}]}' \
@@ -188,14 +278,14 @@ jobs:
 
       - name: Upload Trivy SARIF — critical
         if: always() && hashFiles('trivy-critical.sarif') != ''
-        uses: github/codeql-action/upload-sarif@c10b8064de6f491fea524254123dbe5e09572f13
+        uses: github/codeql-action/upload-sarif@c10b8064de6f491fea524254123dbe5e09572f13 # v4.35.1
         with:
           sarif_file: trivy-critical.sarif
           category: trivy-critical
 
       - name: Upload Trivy SARIF — advisory
         if: always() && hashFiles('trivy-advisory.sarif') != ''
-        uses: github/codeql-action/upload-sarif@c10b8064de6f491fea524254123dbe5e09572f13
+        uses: github/codeql-action/upload-sarif@c10b8064de6f491fea524254123dbe5e09572f13 # v4.35.1
         with:
           sarif_file: trivy-advisory.sarif
           category: trivy-advisory
@@ -205,9 +295,15 @@ jobs:
     permissions:
       contents: read
       security-events: write
+    env:
+      K8S_PATH: ${{ inputs.k8s-path }}
+      DOCKERFILE: ${{ inputs.dockerfile }}
+      TRIVYIGNORE: ${{ inputs.trivyignore }}
 
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
 
       - name: Install Trivy
         run: |
@@ -227,8 +323,8 @@ jobs:
           trivy config \
             --skip-version-check \
             --severity CRITICAL,HIGH \
-            --ignorefile .trivyignore \
-            k8s/ || true
+            --ignorefile "$TRIVYIGNORE" \
+            "$K8S_PATH" || true
 
       - name: Trivy IaC scan — Kubernetes manifests
         run: |
@@ -236,10 +332,10 @@ jobs:
           trivy config \
             --skip-version-check \
             --severity CRITICAL,HIGH \
-            --ignorefile .trivyignore \
+            --ignorefile "$TRIVYIGNORE" \
             --format sarif \
             --output trivy-iac-k8s.sarif \
-            k8s/
+            "$K8S_PATH"
           TRIVY_EXIT=$?
 
           if [ ! -f trivy-iac-k8s.sarif ]; then
@@ -254,10 +350,10 @@ jobs:
         run: |
           trivy config \
             --skip-version-check \
-            --ignorefile .trivyignore \
+            --ignorefile "$TRIVYIGNORE" \
             --format sarif \
             --output trivy-iac-docker.sarif \
-            Dockerfile || true
+            "$DOCKERFILE" || true
 
           if [ ! -f trivy-iac-docker.sarif ]; then
             echo '{"version":"2.1.0","$schema":"https://json.schemastore.org/sarif-2.1.0.json","runs":[{"tool":{"driver":{"name":"Trivy","rules":[]}},"results":[]}]}' \
@@ -266,14 +362,14 @@ jobs:
 
       - name: Upload Trivy IaC SARIF — Kubernetes
         if: always() && hashFiles('trivy-iac-k8s.sarif') != ''
-        uses: github/codeql-action/upload-sarif@c10b8064de6f491fea524254123dbe5e09572f13
+        uses: github/codeql-action/upload-sarif@c10b8064de6f491fea524254123dbe5e09572f13 # v4.35.1
         with:
           sarif_file: trivy-iac-k8s.sarif
           category: trivy-iac-k8s
 
       - name: Upload Trivy IaC SARIF — Dockerfile
         if: always() && hashFiles('trivy-iac-docker.sarif') != ''
-        uses: github/codeql-action/upload-sarif@c10b8064de6f491fea524254123dbe5e09572f13
+        uses: github/codeql-action/upload-sarif@c10b8064de6f491fea524254123dbe5e09572f13 # v4.35.1
         with:
           sarif_file: trivy-iac-docker.sarif
           category: trivy-iac-dockerfile

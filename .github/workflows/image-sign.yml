@@ -1,5 +1,14 @@
 name: Image Sign and Attest
 
+# Reusable. Called from this repository by release.yml, and from other
+# repositories pinned to a tag (pass the same tag as policy-ref).
+#
+# Keyless certificates name the workflow that signed: this file in this
+# repository (job_workflow_ref), not the caller. Any public repository can call
+# this workflow, so a verifier must check both:
+#   - the signer identity:  this file (certificate-identity-regexp), and
+#   - the caller:           --certificate-github-workflow-repository <caller repo>
+
 on:
   workflow_call:
     inputs:
@@ -10,6 +19,23 @@ on:
       registry:
         description: "Container registry hostname"
         required: true
+        type: string
+      certificate-identity-regexp:
+        description: "Signer identity the verify step accepts"
+        required: false
+        default: '^https://github\.com/Ignatius-Kevin-Wijaya/devsecops-hardened-pipeline/\.github/workflows/image-sign\.yml@'
+        type: string
+      policy-repository:
+        description: "Repository holding scripts/query-sbom.py"
+        required: false
+        default: "Ignatius-Kevin-Wijaya/devsecops-hardened-pipeline"
+        type: string
+      policy-ref:
+        description: >-
+          Ref of policy-repository to load scripts from. Leave empty only when the
+          caller is policy-repository itself.
+        required: false
+        default: ""
         type: string
     outputs:
       sbom-artifact-name:
@@ -26,32 +52,49 @@ jobs:
       contents: read
       packages: write
       id-token: write
+    env:
+      IMAGE_REF: ${{ inputs.image-ref }}
 
     outputs:
       sbom-artifact-name: ${{ steps.set-output.outputs.sbom-artifact-name }}
 
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - name: Require policy-ref for cross-repository calls
+        if: inputs.policy-ref == '' && github.repository != inputs.policy-repository
+        run: |
+          echo "::error::Set the policy-ref input to the ref you pinned this workflow to."
+          exit 1
+
+      - name: Check out shared scripts
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          repository: ${{ inputs.policy-ref == '' && github.repository || inputs.policy-repository }}
+          ref: ${{ inputs.policy-ref }}
+          path: .devsecops-policy
+          sparse-checkout: scripts
+          persist-credentials: false
 
       - name: Install Cosign
-        uses: sigstore/cosign-installer@cad07c2e89fa2edd6e2d7bab4c1aa38e53f76003
+        uses: sigstore/cosign-installer@cad07c2e89fa2edd6e2d7bab4c1aa38e53f76003 # v4.1.1
 
       - name: Log in to registry
-        uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121
+        uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121 # v4.1.0
         with:
           registry: ${{ inputs.registry }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Generate CycloneDX SBOM with Syft
-        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
         with:
           image: ${{ inputs.image-ref }}
           format: cyclonedx-json
           output-file: sbom.cyclonedx.json
           artifact-name: sbom-${{ github.sha }}.cyclonedx.json
           upload-artifact: true
-          upload-release-assets: true
+          # The release workflow attaches the SBOM to the GitHub release itself,
+          # so this job never needs contents: write.
+          upload-release-assets: false
 
       - name: Set SBOM output name
         id: set-output
@@ -59,28 +102,26 @@ jobs:
 
       - name: Verify SBOM generated correctly
         run: |
-          python3 scripts/query-sbom.py sbom.cyclonedx.json
+          python3 .devsecops-policy/scripts/query-sbom.py sbom.cyclonedx.json
 
       - name: Sign image with Cosign keyless (OIDC)
-        env:
-          COSIGN_EXPERIMENTAL: "1"
         run: |
-          cosign sign --yes ${{ inputs.image-ref }}
+          cosign sign --yes "$IMAGE_REF"
 
       - name: Attest SBOM to image with Cosign
-        env:
-          COSIGN_EXPERIMENTAL: "1"
         run: |
           cosign attest --yes \
             --predicate sbom.cyclonedx.json \
             --type cyclonedx \
-            ${{ inputs.image-ref }}
+            "$IMAGE_REF"
 
       - name: Verify image signature
         env:
-          COSIGN_EXPERIMENTAL: "1"
+          IDENTITY_REGEXP: ${{ inputs.certificate-identity-regexp }}
         run: |
           cosign verify \
-            --certificate-identity-regexp="https://github.com/${{ github.repository }}/.github/workflows/" \
-            --certificate-oidc-issuer="https://token.actions.githubusercontent.com" \
-            ${{ inputs.image-ref }}
+            --certificate-identity-regexp "$IDENTITY_REGEXP" \
+            --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+            --certificate-github-workflow-repository "$GITHUB_REPOSITORY" \
+            "$IMAGE_REF" > /dev/null
+          echo "Signature verified: signed by $IDENTITY_REGEXP for $GITHUB_REPOSITORY"
