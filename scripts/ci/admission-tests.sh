@@ -41,7 +41,8 @@ dry_run() {
 
 report() {
   printf '%-5s %s\n' "$1" "$2"
-  sed 's/^/        /' <<<"$3"
+  local line
+  while IFS= read -r line; do printf '        %s\n' "$line"; done <<<"$3"
 }
 
 # expect_admitted <case> <manifest>
