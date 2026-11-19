@@ -2,6 +2,21 @@
 
 Reusable GitHub Actions workflows that scan, sign, attest and deploy a small Flask service. Each release runs the whole chain, from signature verification to an HTTP response, on a kind cluster with Gatekeeper enforcing admission policy. The tradeoff behind each control is documented in an ADR.
 
+## Release Evidence
+
+[v0.1.0](https://github.com/Ignatius-Kevin-Wijaya/devsecops-hardened-pipeline/releases/tag/v0.1.0) passed every stage of the [release run](https://github.com/Ignatius-Kevin-Wijaya/devsecops-hardened-pipeline/actions/runs/44567830532):
+
+| Artifact | Where |
+| --- | --- |
+| Signed image | [`ghcr.io/ignatius-kevin-wijaya/devsecops-demo@sha256:c7d8ed92e55ac17668d874e475b35452d34a0ff840c430bacf9a090d02e4456c`](https://github.com/users/Ignatius-Kevin-Wijaya/packages/container/package/devsecops-demo) |
+| CycloneDX SBOM | [sbom-v0.1.0.cyclonedx.json](https://github.com/Ignatius-Kevin-Wijaya/devsecops-hardened-pipeline/releases/download/v0.1.0/sbom-v0.1.0.cyclonedx.json), also attested to the image |
+| Deploy on kind | [Deploy job log](https://github.com/Ignatius-Kevin-Wijaya/devsecops-hardened-pipeline/actions/runs/44567830532/job/135715839011): signature and attestation verified, Vault OIDC login, 5 of 5 admission tests, rollout, smoke test |
+
+The release candidates before it each failed on a step that had never run before, and each failure was fixed in a pull request:
+- the Trivy gate ignored its severity filter for SARIF output ([#2](https://github.com/Ignatius-Kevin-Wijaya/devsecops-hardened-pipeline/pull/2));
+- the Vault role definition was rejected by Vault ([#3](https://github.com/Ignatius-Kevin-Wijaya/devsecops-hardened-pipeline/pull/3));
+- the admission tests broke on an already-rendered manifest ([#4](https://github.com/Ignatius-Kevin-Wijaya/devsecops-hardened-pipeline/pull/4)).
+
 ## Architecture
 
 ```mermaid
