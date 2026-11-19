@@ -31,8 +31,7 @@ echo "==> Creating JWT role for GitHub Actions"
 vault write auth/jwt/role/github-actions \
   role_type="jwt" \
   bound_audiences="${BOUND_AUDIENCES}" \
-  bound_claims_type="string" \
-  bound_claims="{\"sub\": \"repo:${GITHUB_REPO}:environment:${BOUND_ENVIRONMENT}\"}" \
+  bound_subject="repo:${GITHUB_REPO}:environment:${BOUND_ENVIRONMENT}" \
   user_claim="sub" \
   policies="ci-pipeline" \
   ttl="5m" \
