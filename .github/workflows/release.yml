@@ -91,6 +91,9 @@ jobs:
           format: sarif
           output: trivy-release-critical.sarif
           severity: CRITICAL
+          # Without this, trivy-action drops the severity filter for SARIF output,
+          # so exit-code would also fail on LOW, MEDIUM and HIGH findings.
+          limit-severities-for-sarif: true
           ignore-unfixed: true
           exit-code: "1"
           trivyignores: .trivyignore
