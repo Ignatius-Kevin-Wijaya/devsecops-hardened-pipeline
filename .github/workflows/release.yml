@@ -1,5 +1,11 @@
 name: Release
 
+# Runs on a v* tag:
+#   scan -> build and push -> Trivy digest scan -> SBOM, sign, attest
+#        -> deploy to kind (verify, Vault, admission tests, smoke test)
+#        -> GitHub release with the SBOM attached
+# The GitHub release is created only when every earlier stage is green.
+
 on:
   push:
     tags: ["v*"]
@@ -16,29 +22,29 @@ jobs:
     permissions:
       contents: read
       security-events: write
-    secrets: inherit
 
-  build-push-sign:
+  build-push:
     runs-on: ubuntu-latest
     needs: security-scan
     permissions:
       contents: read
       packages: write
-      id-token: write
     outputs:
       image-ref: ${{ steps.export-image-ref.outputs.image-ref }}
 
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
 
       - name: Extract Docker metadata
         id: meta
-        uses: docker/metadata-action@902fa8ec7d6ecbf8d84d538b9b233a880e428804
+        uses: docker/metadata-action@902fa8ec7d6ecbf8d84d538b9b233a880e428804 # v5.7.0
         with:
           images: ghcr.io/ignatius-kevin-wijaya/devsecops-demo
 
       - name: Log in to GHCR
-        uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121
+        uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121 # v4.1.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -46,7 +52,7 @@ jobs:
 
       - name: Build and push image
         id: push
-        uses: docker/build-push-action@bcafcacb16a39f128d818304e6c9c0c18556b85f
+        uses: docker/build-push-action@bcafcacb16a39f128d818304e6c9c0c18556b85f # v7.1.0
         with:
           context: .
           push: true
@@ -55,23 +61,33 @@ jobs:
 
       - name: Export digest image ref
         id: export-image-ref
+        env:
+          DIGEST: ${{ steps.push.outputs.digest }}
         run: |
-          echo "image-ref=ghcr.io/ignatius-kevin-wijaya/devsecops-demo@${{ steps.push.outputs.digest }}" \
-            >> "$GITHUB_OUTPUT"
+          echo "image-ref=ghcr.io/ignatius-kevin-wijaya/devsecops-demo@${DIGEST}" >> "$GITHUB_OUTPUT"
 
   trivy-release-image:
     runs-on: ubuntu-latest
-    needs: build-push-sign
+    needs: build-push
     permissions:
       contents: read
+      packages: read
       security-events: write
 
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
-
-      - uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
-          image-ref: ${{ needs.build-push-sign.outputs.image-ref }}
+          persist-credentials: false
+
+      - name: Trivy scan of the pushed digest
+        uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1 # v0.35.0
+        env:
+          # GHCR packages are private until made public; these let Trivy pull either way.
+          TRIVY_USERNAME: ${{ github.actor }}
+          TRIVY_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          version: v0.69.3
+          image-ref: ${{ needs.build-push.outputs.image-ref }}
           format: sarif
           output: trivy-release-critical.sarif
           severity: CRITICAL
@@ -80,22 +96,84 @@ jobs:
           trivyignores: .trivyignore
 
       - name: Upload Trivy release SARIF
-        if: always()
-        uses: github/codeql-action/upload-sarif@c10b8064de6f491fea524254123dbe5e09572f13
+        if: always() && hashFiles('trivy-release-critical.sarif') != ''
+        uses: github/codeql-action/upload-sarif@c10b8064de6f491fea524254123dbe5e09572f13 # v4.35.1
         with:
           sarif_file: trivy-release-critical.sarif
           category: trivy-release-critical
 
   sign:
     needs:
-      - build-push-sign
+      - build-push
       - trivy-release-image
     uses: ./.github/workflows/image-sign.yml
     with:
-      image-ref: ${{ needs.build-push-sign.outputs.image-ref }}
+      image-ref: ${{ needs.build-push.outputs.image-ref }}
       registry: ghcr.io
     permissions:
       contents: read
       packages: write
       id-token: write
-    secrets: inherit
+
+  deploy:
+    needs:
+      - build-push
+      - sign
+    uses: ./.github/workflows/deploy.yml
+    with:
+      image-ref: ${{ needs.build-push.outputs.image-ref }}
+    permissions:
+      contents: read
+      packages: read
+      id-token: write
+
+  publish-release:
+    runs-on: ubuntu-latest
+    needs:
+      - build-push
+      - sign
+      - deploy
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download the SBOM
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: ${{ needs.sign.outputs.sbom-artifact-name }}
+          path: sbom
+
+      - name: Create the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+          IMAGE_REF: ${{ needs.build-push.outputs.image-ref }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          sbom_file=$(find sbom -type f -name '*.json' -print -quit)
+          test -n "$sbom_file"
+          cp "$sbom_file" "sbom-${TAG}.cyclonedx.json"
+
+          identity='^https://github\.com/Ignatius-Kevin-Wijaya/devsecops-hardened-pipeline/\.github/workflows/image-sign\.yml@'
+          cat > notes.md <<EOF
+          Signed image, SBOM attested, deployed to kind behind Gatekeeper by [this release run](${RUN_URL}):
+
+          \`\`\`
+          ${IMAGE_REF}
+          \`\`\`
+
+          The CycloneDX SBOM is attached below. To verify the signature yourself:
+
+          \`\`\`
+          cosign verify --certificate-identity-regexp '${identity}' --certificate-oidc-issuer https://token.actions.githubusercontent.com --certificate-github-workflow-repository ${GITHUB_REPOSITORY} ${IMAGE_REF}
+          \`\`\`
+          EOF
+
+          prerelease=()
+          if [[ "$TAG" == *-* ]]; then prerelease=(--prerelease); fi
+          gh release create "$TAG" "sbom-${TAG}.cyclonedx.json" \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "$TAG" \
+            --notes-file notes.md \
+            --verify-tag \
+            "${prerelease[@]}"

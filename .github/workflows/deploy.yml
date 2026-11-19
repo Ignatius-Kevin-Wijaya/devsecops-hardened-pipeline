@@ -1,5 +1,12 @@
 name: Deploy
 
+# Called by release.yml. Deploys a signed, digest-pinned image to a throwaway
+# kind cluster created inside this job (ADR-006):
+#   1. verify the Cosign signature and SBOM attestation
+#   2. log in to an in-job Vault with the job's GitHub OIDC token (ADR-003)
+#   3. create kind with Gatekeeper enforcing this repository's policies (ADR-004)
+#   4. run the admission tests, then apply the real manifest and smoke-test it
+
 on:
   workflow_call:
     inputs:
@@ -7,19 +14,16 @@ on:
         description: "Full image reference including digest"
         required: true
         type: string
-      environment:
-        description: "Deployment environment (staging | production)"
-        required: true
-        type: string
       manifest-path:
         description: "Kubernetes Deployment manifest to render with the pinned digest"
         required: false
         default: "k8s/deployment.yml"
         type: string
-    secrets:
-      VAULT_ADDR:
-        description: "HashiCorp Vault address"
-        required: true
+      certificate-identity-regexp:
+        description: "Signer identity accepted before deploy"
+        required: false
+        default: '^https://github\.com/Ignatius-Kevin-Wijaya/devsecops-hardened-pipeline/\.github/workflows/image-sign\.yml@'
+        type: string
 
 permissions:
   contents: read
@@ -27,56 +31,190 @@ permissions:
 jobs:
   deploy:
     runs-on: ubuntu-latest
-    environment: ${{ inputs.environment }}
+    # The Vault role is bound to this environment's OIDC subject:
+    # repo:<owner>/<repo>:environment:kind-ci
+    environment: kind-ci
     permissions:
       contents: read
+      packages: read
       id-token: write
+    env:
+      IMAGE_REF: ${{ inputs.image-ref }}
+      MANIFEST_PATH: ${{ inputs.manifest-path }}
+      APP_NAMESPACE: devsecops-demo
+      VAULT_ADDR: http://127.0.0.1:8200
+      VAULT_VERSION: "2.2.2"
+      VAULT_SHA256: 5700edf139113609962fe371af7d2a53de8ecb720d545dc39b43de204515d3c4
+      VAULT_AUDIENCE: https://github.com/Ignatius-Kevin-Wijaya
 
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+
+      - name: Require a digest-pinned image
+        run: |
+          case "$IMAGE_REF" in
+            *@sha256:*) echo "Deploying $IMAGE_REF" ;;
+            *) echo "::error::image-ref must be pinned by digest: $IMAGE_REF"; exit 1 ;;
+          esac
+
+      # ---- 1. Supply chain ------------------------------------------------
 
       - name: Install Cosign
-        uses: sigstore/cosign-installer@cad07c2e89fa2edd6e2d7bab4c1aa38e53f76003
+        uses: sigstore/cosign-installer@cad07c2e89fa2edd6e2d7bab4c1aa38e53f76003 # v4.1.1
 
-      - name: Verify image signature before deploy
-        env:
-          COSIGN_EXPERIMENTAL: "1"
-        run: |
-          cosign verify \
-            --certificate-identity-regexp="https://github.com/${{ github.repository }}/.github/workflows/" \
-            --certificate-oidc-issuer="https://token.actions.githubusercontent.com" \
-            ${{ inputs.image-ref }}
-          echo "Signature verified — image is safe to deploy"
-
-      - name: Authenticate to Vault via JWT/OIDC
-        uses: hashicorp/vault-action@4c06c5ccf5c0761b6029f56cfb1dcf5565918a3b
+      - name: Log in to GHCR
+        uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121 # v4.1.0
         with:
-          url: ${{ secrets.VAULT_ADDR }}
-          role: github-actions
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Verify the image signature and SBOM attestation
+        env:
+          IDENTITY_REGEXP: ${{ inputs.certificate-identity-regexp }}
+        run: |
+          verify_flags=(
+            --certificate-identity-regexp "$IDENTITY_REGEXP"
+            --certificate-oidc-issuer "https://token.actions.githubusercontent.com"
+            --certificate-github-workflow-repository "$GITHUB_REPOSITORY"
+          )
+          cosign verify "${verify_flags[@]}" "$IMAGE_REF" > /dev/null
+          echo "Signature verified"
+          cosign verify-attestation --type cyclonedx "${verify_flags[@]}" "$IMAGE_REF" > /dev/null
+          echo "CycloneDX SBOM attestation verified"
+
+      # ---- 2. Secrets: Vault JWT/OIDC -------------------------------------
+
+      - name: Start an in-job Vault and bind the GitHub OIDC role
+        run: |
+          curl -sSfL --retry 3 \
+            "https://releases.hashicorp.com/vault/${VAULT_VERSION}/vault_${VAULT_VERSION}_linux_amd64.zip" \
+            -o "$RUNNER_TEMP/vault.zip"
+          echo "${VAULT_SHA256}  $RUNNER_TEMP/vault.zip" | sha256sum --check --quiet -
+          mkdir -p "$HOME/.local/bin"
+          unzip -q -o "$RUNNER_TEMP/vault.zip" vault -d "$HOME/.local/bin"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          export PATH="$HOME/.local/bin:$PATH"
+
+          # The root token exists only inside this step and is revoked at the end.
+          root_token=$(openssl rand -hex 16)
+          echo "::add-mask::$root_token"
+          vault server -dev -dev-root-token-id="$root_token" -dev-listen-address=127.0.0.1:8200 \
+            > "$RUNNER_TEMP/vault.log" 2>&1 &
+          for _ in $(seq 1 30); do
+            curl -sf "$VAULT_ADDR/v1/sys/health" > /dev/null && break
+            sleep 1
+          done
+          export VAULT_TOKEN="$root_token"
+          vault status > /dev/null
+
+          bash vault/config/jwt-auth-config.sh
+          vault kv put secret/ci/demo message="issued to an OIDC-authenticated deploy job" > /dev/null
+
+          # The binding the role used before (main branch). Kept here only to show
+          # that this job's token is rejected by it.
+          vault write auth/jwt/role/main-branch-only \
+            role_type=jwt bound_audiences="$VAULT_AUDIENCE" user_claim=sub policies=ci-pipeline ttl=5m \
+            bound_claims="{\"sub\": \"repo:${GITHUB_REPOSITORY}:ref:refs/heads/main\"}" > /dev/null
+
+          vault token revoke -self
+          rm -f "$HOME/.vault-token" # dev mode also stores the root token here
+          echo "Root token revoked; from here on the only way in is the OIDC login."
+
+      - name: Log in to Vault with the job's OIDC token
+        uses: hashicorp/vault-action@4c06c5ccf5c0761b6029f56cfb1dcf5565918a3b # v3.4.0
+        with:
+          url: http://127.0.0.1:8200
           method: jwt
-          jwtGithubAudience: "https://github.com/Ignatius-Kevin-Wijaya"
+          role: github-actions
+          jwtGithubAudience: https://github.com/Ignatius-Kevin-Wijaya
+          exportToken: true
           secrets: |
-            database/creds/ci-role username | DB_USERNAME ;
-            database/creds/ci-role password | DB_PASSWORD
+            secret/data/ci/demo message | DEMO_MESSAGE
 
-      - name: Confirm dynamic credential pull
+      - name: Check what the OIDC-issued Vault token can and cannot do
         run: |
-          test -n "${DB_USERNAME:-}"
-          test -n "${DB_PASSWORD:-}"
-          echo "Vault JWT auth successful — short-lived database credentials issued"
-          echo "Lease scope: database/creds/ci-role"
-          echo "No static VAULT_TOKEN used in the workflow"
+          test -n "${DEMO_MESSAGE:-}"
+          echo "Read secret/ci/demo through the OIDC login"
+          vault token lookup -format=json | jq '{policies: .data.policies, ttl: .data.ttl, role: .data.meta.role}'
 
-      - name: Render deployment manifest with pinned digest
-        run: |
-          sed "s|ghcr.io/ignatius-kevin-wijaya/devsecops-demo:release-placeholder|${{ inputs.image-ref }}|" \
-            "${{ inputs.manifest-path }}" > rendered-deployment.yml
+          if out=$(vault read secret/data/admin/root-credentials 2>&1); then
+            echo "::error::The CI token can read outside secret/ci/"
+            exit 1
+          fi
+          if ! grep -q "permission denied" <<<"$out"; then
+            echo "::error::Unexpected error reading outside secret/ci/"; echo "$out"; exit 1
+          fi
+          echo "Denied outside secret/ci/, as the policy intends"
 
-      - name: Verify rendered manifest uses digest
-        run: |
-          grep -q "${{ inputs.image-ref }}" rendered-deployment.yml
+          oidc_token=$(curl -sSf -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=$VAULT_AUDIENCE" | jq -r .value)
+          echo "::add-mask::$oidc_token"
+          if out=$(env -u VAULT_TOKEN vault write -field=token auth/jwt/login \
+                role=main-branch-only jwt="$oidc_token" 2>&1); then
+            echo "::error::A branch-bound role accepted an environment-scoped job"
+            exit 1
+          fi
+          if ! grep -qi "claim" <<<"$out"; then
+            echo "::error::Branch-bound login failed for an unexpected reason"; echo "$out"; exit 1
+          fi
+          echo "A role bound to ref:refs/heads/main rejects this job, as ADR-003 explains:"
+          grep -i "claim" <<<"$out"
 
-      - name: Deploy image
+      # ---- 3. Cluster with admission control ------------------------------
+
+      - name: Create kind with Gatekeeper enforcing this repository's policies
+        run: bash scripts/ci/kind-up.sh
+
+      - name: Render the Deployment with the pinned digest
         run: |
-          echo "Deploying ${{ inputs.image-ref }} to ${{ inputs.environment }}"
-          echo "Rendered manifest: rendered-deployment.yml"
+          kubectl set image --local -f "$MANIFEST_PATH" "app=$IMAGE_REF" -o yaml > rendered-deployment.yml
+          grep -F "image: $IMAGE_REF" rendered-deployment.yml
+
+      - name: Admission tests (tag-only and foreign images are rejected)
+        env:
+          MANIFEST: rendered-deployment.yml
+        run: bash scripts/ci/admission-tests.sh "$IMAGE_REF"
+
+      # ---- 4. Deploy and smoke test ---------------------------------------
+
+      - name: Apply the signed, digest-pinned release
+        env:
+          GHCR_USER: ${{ github.actor }}
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Pull credentials last only as long as this job's GITHUB_TOKEN.
+          kubectl -n "$APP_NAMESPACE" create secret docker-registry ghcr-pull \
+            --docker-server=ghcr.io --docker-username="$GHCR_USER" --docker-password="$GHCR_TOKEN"
+          kubectl -n "$APP_NAMESPACE" patch serviceaccount default \
+            -p '{"imagePullSecrets": [{"name": "ghcr-pull"}]}'
+          kubectl -n "$APP_NAMESPACE" apply \
+            -f k8s/service.yml -f k8s/networkpolicy.yml -f rendered-deployment.yml
+          kubectl -n "$APP_NAMESPACE" rollout status deployment/devsecops-demo --timeout=180s
+          kubectl -n "$APP_NAMESPACE" get pods -o wide
+
+      - name: Smoke test through the Service
+        run: |
+          kubectl -n "$APP_NAMESPACE" port-forward service/devsecops-demo 8080:80 \
+            > "$RUNNER_TEMP/port-forward.log" 2>&1 &
+          for _ in $(seq 1 20); do
+            curl -sf http://127.0.0.1:8080/healthz > /dev/null && break
+            sleep 1
+          done
+          curl -sSf http://127.0.0.1:8080/healthz; echo
+          curl -sSf http://127.0.0.1:8080/readyz; echo
+          curl -sSf http://127.0.0.1:8080/api/v1/info; echo
+
+      - name: Diagnostics on failure
+        if: failure()
+        run: |
+          command -v kubectl > /dev/null || exit 0
+          kubectl get pods -A -o wide || true
+          kubectl -n "$APP_NAMESPACE" describe pods || true
+          kubectl -n "$APP_NAMESPACE" get events --sort-by=.lastTimestamp || true
+          kubectl get constrainttemplates -o yaml || true
+          kubectl -n gatekeeper-system logs deployment/gatekeeper-controller-manager --tail=100 || true
+          # The dev server's banner prints its root token and unseal key; leave them out.
+          [ -f "$RUNNER_TEMP/vault.log" ] && grep -v -i -E 'root token|unseal key' "$RUNNER_TEMP/vault.log" | tail -50 || true
