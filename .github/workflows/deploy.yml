@@ -117,7 +117,7 @@ jobs:
           # that this job's token is rejected by it.
           vault write auth/jwt/role/main-branch-only \
             role_type=jwt bound_audiences="$VAULT_AUDIENCE" user_claim=sub policies=ci-pipeline ttl=5m \
-            bound_claims="{\"sub\": \"repo:${GITHUB_REPOSITORY}:ref:refs/heads/main\"}" > /dev/null
+            bound_subject="repo:${GITHUB_REPOSITORY}:ref:refs/heads/main" > /dev/null
 
           vault token revoke -self
           rm -f "$HOME/.vault-token" # dev mode also stores the root token here
