@@ -18,6 +18,13 @@ is rendered or applied. The trusted-image Gatekeeper policy starts in `dryrun`
 mode, then moves to deny once the cluster baseline is clean and all workloads
 deploy by digest.
 
+**Update (Nov 2026):** The trusted-image constraint is now `deny`, like the other
+two. The only cluster is the throwaway kind cluster from ADR-006, which has no
+existing workloads to baseline. Admission tests run on every push and pull
+request and again in every release, so each policy is shown both admitting the
+real manifest and denying the violation it targets. The constraints match
+cluster-wide; a shared cluster should exclude its system and add-on namespaces.
+
 **Consequences:**
 
 - **Positive:** The cluster enforces structural manifest policy even if a team

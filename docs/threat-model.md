@@ -25,12 +25,14 @@
 | Vulnerable packages and insecure manifests | Trivy image and IaC scanning | Cannot guarantee the scanned tag is what runs unless deployment is pinned by digest |
 | Unknown component inventory | Syft CycloneDX SBOM | Does not itself block deployment |
 | Image tampering after push | Cosign keyless signing and verify-before-deploy | Does not protect unsigned images if verification is skipped |
+| Another repository calling the public signing workflow | Verifiers pin both the signer (`image-sign.yml` in this repository) and the caller (`--certificate-github-workflow-repository`) | Any verifier that checks the signer identity alone accepts images built by any caller |
 | Static CI secret sprawl | Vault JWT auth with short-lived credentials | Still depends on Vault availability and correct auth role binding |
 | Insecure runtime manifests | Gatekeeper admission policies | Does not replace upstream CI checks or cryptographic signature verification |
 
 ## Residual Risk
 
-- The deploy workflow renders a pinned manifest but does not include live cluster credentials in this repository.
+- The deploy target is a throwaway kind cluster inside the release job (ADR-006). No long-lived environment exists, and no cluster credentials are stored in this repository.
+- The release job's Vault is a dev-mode server inside the job (ADR-003). It proves the OIDC login, role binding and policy, not the operation of a real Vault.
 - Gatekeeper enforces manifest-time policy but signature verification still happens in CI before deploy rather than inside the cluster.
 - GitHub-hosted runners and third-party actions remain part of the trust boundary even with pinned SHAs and minimal permissions.
 - The sample application is intentionally small, so the SAST and runtime policy coverage demonstrates patterns more than broad application attack surface.
