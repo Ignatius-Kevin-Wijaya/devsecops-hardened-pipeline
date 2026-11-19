@@ -26,8 +26,14 @@ CONTAINER_PATH="/spec/template/spec/containers/0"
 
 failures=0
 
+# kubectl set image prints nothing when the container already has the requested
+# image (as in a manifest rendered with TRUSTED_IMAGE), so set a sentinel first;
+# the second call then always changes the image and prints the manifest.
+SENTINEL_IMAGE="admission-test.invalid/sentinel:0"
+
 with_image() {
-  kubectl set image --local -f "$MANIFEST" "${CONTAINER}=$1" -o yaml
+  kubectl set image --local -f "$MANIFEST" "${CONTAINER}=${SENTINEL_IMAGE}" -o yaml |
+    kubectl set image --local -f - "${CONTAINER}=$1" -o yaml
 }
 
 without_field() {
